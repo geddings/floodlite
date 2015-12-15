@@ -14,7 +14,7 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import static org.easymock.EasyMock.createMock;
 import static org.easymock.EasyMock.expect;
@@ -41,7 +41,17 @@ import org.easymock.EasyMock;
 import org.junit.Before;
 import org.junit.Test;
 
+import net.floodlightcontroller.core.IOFConnectionBackend;
+import net.floodlightcontroller.core.IOFSwitchBackend;
+import net.floodlightcontroller.core.LogicalOFMessageCategory;
+import net.floodlightcontroller.core.PortChangeEvent;
+import net.floodlightcontroller.core.PortChangeType;
+import net.floodlightcontroller.core.SwitchDescription;
+import net.floodlightcontroller.core.SwitchDriverSubHandshakeAlreadyStarted;
+import net.floodlightcontroller.core.SwitchDriverSubHandshakeCompleted;
+import net.floodlightcontroller.core.SwitchDriverSubHandshakeNotStarted;
 import net.floodlightcontroller.core.internal.IOFSwitchManager;
+import net.floodlightcontroller.core.internal.OFSwitch;
 import net.floodlightcontroller.core.internal.SwitchManagerCounters;
 import net.floodlightcontroller.debugcounter.DebugCounterServiceImpl;
 import net.floodlightcontroller.debugcounter.IDebugCounterService;

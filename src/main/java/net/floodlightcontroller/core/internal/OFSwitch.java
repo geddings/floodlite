@@ -15,7 +15,7 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -37,8 +37,18 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import javax.annotation.Nonnull;
 
-import net.floodlightcontroller.core.internal.IOFSwitchManager;
-import net.floodlightcontroller.core.internal.TableFeatures;
+import net.floodlightcontroller.core.IOFConnection;
+import net.floodlightcontroller.core.IOFConnectionBackend;
+import net.floodlightcontroller.core.IOFSwitch;
+import net.floodlightcontroller.core.IOFSwitchBackend;
+import net.floodlightcontroller.core.LogicalOFMessageCategory;
+import net.floodlightcontroller.core.PortChangeEvent;
+import net.floodlightcontroller.core.PortChangeType;
+import net.floodlightcontroller.core.SwitchDescription;
+import net.floodlightcontroller.core.SwitchDriverSubHandshakeAlreadyStarted;
+import net.floodlightcontroller.core.SwitchDriverSubHandshakeCompleted;
+import net.floodlightcontroller.core.SwitchDriverSubHandshakeNotStarted;
+import net.floodlightcontroller.core.IOFSwitch.SwitchStatus;
 import net.floodlightcontroller.core.util.AppCookie;
 import net.floodlightcontroller.core.util.URIUtil;
 

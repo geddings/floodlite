@@ -1,10 +1,12 @@
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import java.net.SocketAddress;
 import java.util.List;
 import java.util.Date;
 
-import net.floodlightcontroller.core.internal.IOFConnectionListener;
+import net.floodlightcontroller.core.IOFConnectionBackend;
+import net.floodlightcontroller.core.IOFMessageWriter;
+import net.floodlightcontroller.core.SwitchDisconnectedException;
 
 import org.projectfloodlight.openflow.protocol.OFFactories;
 import org.projectfloodlight.openflow.protocol.OFFactory;

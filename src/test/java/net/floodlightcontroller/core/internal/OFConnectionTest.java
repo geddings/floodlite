@@ -1,4 +1,4 @@
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import static org.easymock.EasyMock.capture;
 import static org.easymock.EasyMock.expect;
@@ -13,12 +13,18 @@ import org.easymock.Capture;
 import org.easymock.EasyMock;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.Matchers;
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.util.HashedWheelTimer;
-import org.jboss.netty.util.Timer;
+
+import io.netty.channel.Channel;
+import io.netty.util.HashedWheelTimer;
+import io.netty.util.Timer;
+
 import org.junit.Before;
 import org.junit.Test;
 
+import net.floodlightcontroller.core.SwitchDisconnectedException;
+import net.floodlightcontroller.core.internal.OFConnection;
+import net.floodlightcontroller.core.internal.OFConnectionCounters;
+import net.floodlightcontroller.core.internal.OFErrorMsgException;
 import net.floodlightcontroller.debugcounter.DebugCounterServiceImpl;
 import net.floodlightcontroller.debugcounter.IDebugCounterService;
 
@@ -142,9 +148,9 @@ public class OFConnectionTest {
     }
 
     private Capture<List<OFMessage>> prepareChannelForWriteList() {
-        EasyMock.expect(channel.isConnected()).andReturn(Boolean.TRUE).anyTimes();
+        EasyMock.expect(channel.isActive()).andReturn(Boolean.TRUE).anyTimes();
         Capture<List<OFMessage>> cMsgList = new Capture<>();
-        expect(channel.write(capture(cMsgList))).andReturn(null).once();
+        expect(channel.writeAndFlush(capture(cMsgList))).andReturn(null).once();
         replay(channel);
         return cMsgList;
     }
@@ -181,7 +187,7 @@ public class OFConnectionTest {
     @Test(timeout = 5000)
     public void testWriteRequestNotConnectedFailure() throws InterruptedException,
             ExecutionException {
-        EasyMock.expect(channel.isConnected()).andReturn(Boolean.FALSE).anyTimes();
+        EasyMock.expect(channel.isActive()).andReturn(Boolean.FALSE).anyTimes();
         replay(channel);
 
         OFEchoRequest echoRequest = factory.echoRequest(new byte[] {});

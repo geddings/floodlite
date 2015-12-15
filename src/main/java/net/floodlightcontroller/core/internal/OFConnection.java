@@ -15,7 +15,7 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -29,15 +29,18 @@ import java.util.concurrent.TimeoutException;
 
 import javax.annotation.Nonnull;
 
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.util.Timeout;
-import org.jboss.netty.util.Timer;
-import org.jboss.netty.util.TimerTask;
+import io.netty.channel.Channel;
+import io.netty.util.Timeout;
+import io.netty.util.Timer;
+import io.netty.util.TimerTask;
 
 import java.util.Date;
 
-import net.floodlightcontroller.core.internal.Controller;
-import net.floodlightcontroller.core.internal.IOFConnectionListener;
+import net.floodlightcontroller.core.Deliverable;
+import net.floodlightcontroller.core.DeliverableListenableFuture;
+import net.floodlightcontroller.core.IOFConnection;
+import net.floodlightcontroller.core.IOFConnectionBackend;
+import net.floodlightcontroller.core.SwitchDisconnectedException;
 import net.floodlightcontroller.debugcounter.IDebugCounterService;
 
 import org.projectfloodlight.openflow.protocol.OFErrorMsg;
@@ -164,7 +167,7 @@ public class OFConnection implements IOFConnection, IOFConnectionBackend{
                 logger.trace("{}: send {}", this, m);
             counters.updateWriteStats(m);
         }
-        this.channel.write(msglist);
+        this.channel.writeAndFlush(msglist);
     }
 
     // Notifies the connection object that the channel has been disconnected
@@ -188,7 +191,7 @@ public class OFConnection implements IOFConnection, IOFConnectionBackend{
 
     @Override
     public String toString() {
-        String channelString = (channel != null) ? String.valueOf(channel.getRemoteAddress()): "?";
+        String channelString = (channel != null) ? String.valueOf(channel.remoteAddress()): "?";
         return "OFConnection [" + getDatapathId() + "(" + getAuxId() + ")" + "@" + channelString + "]";
     }
 
@@ -279,7 +282,7 @@ public class OFConnection implements IOFConnection, IOFConnectionBackend{
 
     @Override
     public boolean isConnected() {
-        return channel.isConnected();
+        return channel.isActive();
     }
 
     @Override
@@ -293,12 +296,12 @@ public class OFConnection implements IOFConnection, IOFConnectionBackend{
 
     @Override
     public SocketAddress getRemoteInetAddress() {
-        return channel.getRemoteAddress();
+        return channel.remoteAddress();
     }
 
     @Override
     public SocketAddress getLocalInetAddress() {
-        return channel.getLocalAddress();
+        return channel.localAddress();
     }
 
     public boolean deliverResponse(OFMessage m) {
