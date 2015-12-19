@@ -1,4 +1,4 @@
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import static org.easymock.EasyMock.capture;
 import static org.easymock.EasyMock.expect;
@@ -13,12 +13,20 @@ import org.easymock.Capture;
 import org.easymock.EasyMock;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.Matchers;
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.util.HashedWheelTimer;
-import org.jboss.netty.util.Timer;
+
+import io.netty.channel.Channel;
+import io.netty.util.HashedWheelTimer;
+import io.netty.util.Timer;
+
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import net.floodlightcontroller.core.SwitchDisconnectedException;
+import net.floodlightcontroller.core.internal.OFConnection;
+import net.floodlightcontroller.core.internal.OFConnectionCounters;
+import net.floodlightcontroller.core.internal.OFErrorMsgException;
+import net.floodlightcontroller.core.test.TestEventLoop;
 import net.floodlightcontroller.debugcounter.DebugCounterServiceImpl;
 import net.floodlightcontroller.debugcounter.IDebugCounterService;
 
@@ -62,17 +70,28 @@ public class OFConnectionTest {
     private OFConnection conn;
     private DatapathId switchId;
     private Timer timer;
+    private TestEventLoop eventLoop;
 
     @Before
     public void setUp() throws Exception {
         factory = OFFactories.getFactory(OFVersion.OF_13);
         switchId = DatapathId.of(1);
         timer = new HashedWheelTimer();
-        channel = EasyMock.createNiceMock(Channel.class);        
+        channel = EasyMock.createMock(Channel.class);        
         IDebugCounterService debugCounterService = new DebugCounterServiceImpl();
         debugCounterService.registerModule(OFConnectionCounters.COUNTER_MODULE);
         conn = new OFConnection(switchId, factory, channel, OFAuxId.MAIN,
                                 debugCounterService, timer);
+        eventLoop = new TestEventLoop();
+        
+        expect(channel.eventLoop()).andReturn(eventLoop).anyTimes();
+    }
+    
+    @After
+    public void tearDown() throws Exception {
+    	if (timer != null) {
+    		timer.stop();
+    	}
     }
 
     @Test(timeout = 5000)
@@ -84,6 +103,7 @@ public class OFConnectionTest {
         assertThat("Connection should have 1 pending request",
                 conn.getPendingRequestIds().size(), equalTo(1));
 
+        eventLoop.runTasks();
         assertThat("Should have captured MsgList", cMsgList.getValue(),
                 Matchers.<OFMessage> contains(echoRequest));
 
@@ -111,7 +131,8 @@ public class OFConnectionTest {
         ListenableFuture<List<OFFlowStatsReply>> future = conn.writeStatsRequest(flowStatsRequest);
         assertThat("Connection should have 1 pending request",
                 conn.getPendingRequestIds().size(), equalTo(1));
-
+        
+        eventLoop.runTasks();
         assertThat("Should have captured MsgList", cMsgList.getValue(),
                 Matchers.<OFMessage> contains(flowStatsRequest));
 
@@ -142,9 +163,9 @@ public class OFConnectionTest {
     }
 
     private Capture<List<OFMessage>> prepareChannelForWriteList() {
-        EasyMock.expect(channel.isConnected()).andReturn(Boolean.TRUE).anyTimes();
+        EasyMock.expect(channel.isActive()).andReturn(Boolean.TRUE).anyTimes();
         Capture<List<OFMessage>> cMsgList = new Capture<>();
-        expect(channel.write(capture(cMsgList))).andReturn(null).once();
+        expect(channel.writeAndFlush(capture(cMsgList))).andReturn(null).once();
         replay(channel);
         return cMsgList;
     }
@@ -159,6 +180,7 @@ public class OFConnectionTest {
         assertThat("Connection should have 1 pending request",
                 conn.getPendingRequestIds().size(), equalTo(1));
 
+        eventLoop.runTasks();
         assertThat("Should have captured MsgList", cMsgList.getValue(),
                 Matchers.<OFMessage> contains(roleRequest));
 
@@ -181,7 +203,7 @@ public class OFConnectionTest {
     @Test(timeout = 5000)
     public void testWriteRequestNotConnectedFailure() throws InterruptedException,
             ExecutionException {
-        EasyMock.expect(channel.isConnected()).andReturn(Boolean.FALSE).anyTimes();
+        EasyMock.expect(channel.isActive()).andReturn(Boolean.FALSE).anyTimes();
         replay(channel);
 
         OFEchoRequest echoRequest = factory.echoRequest(new byte[] {});
@@ -216,7 +238,7 @@ public class OFConnectionTest {
                 conn.getPendingRequestIds().isEmpty(), equalTo(true));
     }
 
-    /** write a packetOut, which is buffered */
+    /** write a packetOut, which is not buffered */
     @Test(timeout = 5000)
     public void testSingleMessageWrite() throws InterruptedException, ExecutionException {
         Capture<List<OFMessage>> cMsgList = prepareChannelForWriteList();
@@ -227,6 +249,7 @@ public class OFConnectionTest {
                 .build();
         
         conn.write(packetOut);
+        eventLoop.runTasks();
         assertThat("Write should have been flushed", cMsgList.hasCaptured(), equalTo(true));
         
         List<OFMessage> value = cMsgList.getValue();
@@ -247,7 +270,7 @@ public class OFConnectionTest {
                 .build();
 
         conn.write(ImmutableList.of(hello, packetOut));
-
+        eventLoop.runTasks();
         assertThat("Write should have been written", cMsgList.hasCaptured(), equalTo(true));
         List<OFMessage> value = cMsgList.getValue();
         logger.info("Captured channel write: "+value);
