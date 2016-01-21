@@ -1,4 +1,4 @@
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import org.projectfloodlight.openflow.protocol.OFErrorMsg;
 import org.projectfloodlight.openflow.protocol.OFRequest;

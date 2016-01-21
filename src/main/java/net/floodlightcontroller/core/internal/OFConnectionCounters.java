@@ -1,6 +1,5 @@
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
-import net.floodlightcontroller.core.internal.OFSwitchManager;
 import net.floodlightcontroller.debugcounter.IDebugCounter;
 import net.floodlightcontroller.debugcounter.IDebugCounterService;
 
