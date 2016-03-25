@@ -1,10 +1,15 @@
-package net.floodlightcontroller.core;
+package net.floodlightcontroller.core.internal;
 
 import java.net.SocketAddress;
+import java.util.Collection;
 import java.util.List;
-
 import java.util.Date;
-import net.floodlightcontroller.core.internal.IOFConnectionListener;
+
+import net.floodlightcontroller.core.IOFConnectionBackend;
+import net.floodlightcontroller.core.IOFMessageWriter;
+import net.floodlightcontroller.core.SwitchDisconnectedException;
+import net.floodlightcontroller.util.IterableUtils;
+
 import org.projectfloodlight.openflow.protocol.OFFactories;
 import org.projectfloodlight.openflow.protocol.OFFactory;
 import org.projectfloodlight.openflow.protocol.OFMessage;
@@ -14,6 +19,7 @@ import org.projectfloodlight.openflow.protocol.OFStatsRequest;
 import org.projectfloodlight.openflow.protocol.OFVersion;
 import org.projectfloodlight.openflow.types.DatapathId;
 import org.projectfloodlight.openflow.types.OFAuxId;
+import org.projectfloodlight.openflow.types.U64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,13 +44,15 @@ public class NullConnection implements IOFConnectionBackend, IOFMessageWriter {
     }
 
     @Override
-    public void write(OFMessage m) {
+    public boolean write(OFMessage m) {
         warn();
+        return false;
     }
 
     @Override
-    public void write(Iterable<OFMessage> msglist) {
+    public Collection<OFMessage> write(Iterable<OFMessage> msgList) {
         warn();
+        return IterableUtils.toCollection(msgList);
     }
 
     @Override
@@ -70,11 +78,6 @@ public class NullConnection implements IOFConnectionBackend, IOFMessageWriter {
 
     @Override
     public void cancelAllPendingRequests() {
-        // noop
-    }
-
-    @Override
-    public void flush() {
         // noop
     }
 
@@ -111,4 +114,13 @@ public class NullConnection implements IOFConnectionBackend, IOFMessageWriter {
     public void setListener(IOFConnectionListener listener) {
     }
 
+	@Override
+	public U64 getLatency() {
+		return U64.ZERO;
+	}
+
+	@Override
+	public void updateLatency(U64 latency) {
+		// noop
+	}
 }
