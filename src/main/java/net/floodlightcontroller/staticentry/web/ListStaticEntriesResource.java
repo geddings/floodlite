@@ -14,15 +14,15 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.staticflowentry.web;
+package net.floodlightcontroller.staticentry.web;
 
 import java.util.HashMap;
 import java.util.Map;
 
 import net.floodlightcontroller.core.web.ControllerSwitchesResource;
-import net.floodlightcontroller.staticflowentry.IStaticFlowEntryPusherService;
+import net.floodlightcontroller.staticentry.IStaticEntryPusherService;
 
-import org.projectfloodlight.openflow.protocol.OFFlowMod;
+import org.projectfloodlight.openflow.protocol.OFMessage;
 import org.projectfloodlight.openflow.types.DatapathId;
 import org.restlet.data.Status;
 import org.restlet.resource.Get;
@@ -30,26 +30,26 @@ import org.restlet.resource.ServerResource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ListStaticFlowEntriesResource extends ServerResource {
-    protected static Logger log = LoggerFactory.getLogger(ListStaticFlowEntriesResource.class);
+public class ListStaticEntriesResource extends ServerResource {
+    protected static Logger log = LoggerFactory.getLogger(ListStaticEntriesResource.class);
     
     @Get("json")
-    public OFFlowModMap ListStaticFlowEntries() {
-        IStaticFlowEntryPusherService sfpService =
-                (IStaticFlowEntryPusherService)getContext().getAttributes().
-                    get(IStaticFlowEntryPusherService.class.getCanonicalName());
+    public SFPEntryMap ListStaticFlowEntries() {
+        IStaticEntryPusherService sfpService =
+                (IStaticEntryPusherService)getContext().getAttributes().
+                    get(IStaticEntryPusherService.class.getCanonicalName());
         
         String param = (String) getRequestAttributes().get("switch");
         if (log.isDebugEnabled())
-            log.debug("Listing all static flow entires for switch: " + param);
+            log.debug("Listing all static flow/group entires for switch: " + param);
         
         if (param.toLowerCase().equals("all")) {
-            return new OFFlowModMap(sfpService.getFlows());
+            return new SFPEntryMap(sfpService.getEntries());
         } else {
             try {
-                Map<String, Map<String, OFFlowMod>> retMap = new HashMap<String, Map<String, OFFlowMod>>();
-                retMap.put(param, sfpService.getFlows(DatapathId.of(param)));
-                return new OFFlowModMap(retMap);
+                Map<String, Map<String, OFMessage>> retMap = new HashMap<String, Map<String, OFMessage>>();
+                retMap.put(param, sfpService.getEntries(DatapathId.of(param)));
+                return new SFPEntryMap(retMap);
                 
             } catch (NumberFormatException e){
                 setStatus(Status.CLIENT_ERROR_BAD_REQUEST, ControllerSwitchesResource.DPID_ERROR);

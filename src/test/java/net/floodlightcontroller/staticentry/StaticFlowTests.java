@@ -14,7 +14,7 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.staticflowentry;
+package net.floodlightcontroller.staticentry;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -31,16 +31,21 @@ import org.easymock.EasyMock;
 import org.junit.Test;
 import org.projectfloodlight.openflow.protocol.OFFactories;
 import org.projectfloodlight.openflow.protocol.OFFactory;
+import org.projectfloodlight.openflow.protocol.OFFlowDelete;
+import org.projectfloodlight.openflow.protocol.OFFlowDeleteStrict;
 import org.projectfloodlight.openflow.protocol.OFFlowMod;
 import org.projectfloodlight.openflow.protocol.OFFlowModFlags;
 import org.projectfloodlight.openflow.protocol.OFVersion;
 import org.projectfloodlight.openflow.protocol.match.Match;
+import org.projectfloodlight.openflow.protocol.match.MatchFields;
 import org.projectfloodlight.openflow.protocol.OFMessage;
 import org.projectfloodlight.openflow.types.DatapathId;
 import org.projectfloodlight.openflow.types.OFBufferId;
 import org.projectfloodlight.openflow.types.OFPort;
 import org.projectfloodlight.openflow.protocol.action.OFAction;
 import org.projectfloodlight.openflow.util.HexString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFSwitch;
@@ -55,14 +60,15 @@ import net.floodlightcontroller.util.MatchUtils;
 import net.floodlightcontroller.util.OFMessageUtils;
 import net.floodlightcontroller.restserver.IRestApiService;
 import net.floodlightcontroller.restserver.RestApiServer;
-import net.floodlightcontroller.staticflowentry.StaticFlowEntryPusher;
+import net.floodlightcontroller.staticentry.StaticEntryPusher;
 import net.floodlightcontroller.storage.IStorageSourceService;
 import net.floodlightcontroller.storage.memory.MemoryStorageSource;
-import static net.floodlightcontroller.staticflowentry.StaticFlowEntryPusher.*;
+import static net.floodlightcontroller.staticentry.StaticEntryPusher.*;
 import static org.easymock.EasyMock.*;
 import static org.junit.Assert.*;
 
 public class StaticFlowTests extends FloodlightTestCase {
+	protected static Logger log = LoggerFactory.getLogger(StaticFlowTests.class);
 
 	static String TestSwitch1DPID = "00:00:00:00:00:00:00:01";
 	static int TotalTestRules = 3;
@@ -78,15 +84,15 @@ public class StaticFlowTests extends FloodlightTestCase {
 	static {
 		FlowMod1 = factory.buildFlowModify().build();
 		TestRule1 = new HashMap<String,Object>();
-		TestRule1.put(COLUMN_NAME, "TestRule1");
-		TestRule1.put(COLUMN_SWITCH, TestSwitch1DPID);
+		TestRule1.put(Columns.COLUMN_NAME, "TestRule1");
+		TestRule1.put(Columns.COLUMN_SWITCH, TestSwitch1DPID);
 		// setup match
 		Match match;
-		TestRule1.put(COLUMN_DL_DST, "00:20:30:40:50:60");
+		TestRule1.put(StaticEntryPusher.matchFieldToColumnName(MatchFields.ETH_DST), "00:20:30:40:50:60");
 		match = MatchUtils.fromString("eth_dst=00:20:30:40:50:60", factory.getVersion());
 		// setup actions
 		List<OFAction> actions = new LinkedList<OFAction>();
-		TestRule1.put(COLUMN_ACTIONS, "output=1");
+		TestRule1.put(Columns.COLUMN_ACTIONS, "output=1");
 		actions.add(factory.actions().output(OFPort.of(1), Integer.MAX_VALUE));
 		// done
 		FlowMod1 = FlowMod1.createBuilder().setMatch(match)
@@ -105,16 +111,16 @@ public class StaticFlowTests extends FloodlightTestCase {
 	static {
 		FlowMod2 = factory.buildFlowModify().build();
 		TestRule2 = new HashMap<String,Object>();
-		TestRule2.put(COLUMN_NAME, "TestRule2");
-		TestRule2.put(COLUMN_SWITCH, TestSwitch1DPID);
+		TestRule2.put(Columns.COLUMN_NAME, "TestRule2");
+		TestRule2.put(Columns.COLUMN_SWITCH, TestSwitch1DPID);
 		// setup match
 		Match match;        
-		TestRule2.put(COLUMN_DL_TYPE, "0x800");
-		TestRule2.put(COLUMN_NW_DST, "192.168.1.0/24");
+		TestRule2.put(StaticEntryPusher.matchFieldToColumnName(MatchFields.ETH_TYPE), "0x800");
+		TestRule2.put(StaticEntryPusher.matchFieldToColumnName(MatchFields.IPV4_DST), "192.168.1.0/24");
 		match = MatchUtils.fromString("eth_type=0x800,ipv4_dst=192.168.1.0/24", factory.getVersion());
 		// setup actions
 		List<OFAction> actions = new LinkedList<OFAction>();
-		TestRule2.put(COLUMN_ACTIONS, "output=1");
+		TestRule2.put(Columns.COLUMN_ACTIONS, "output=1");
 		actions.add(factory.actions().output(OFPort.of(1), Integer.MAX_VALUE));
 		// done
 		FlowMod2 = FlowMod2.createBuilder().setMatch(match)
@@ -130,7 +136,7 @@ public class StaticFlowTests extends FloodlightTestCase {
 
 	static Map<String,Object> TestRule3;
 	static OFFlowMod FlowMod3;
-	private StaticFlowEntryPusher staticFlowEntryPusher;
+	private StaticEntryPusher pusher;
 	private IOFSwitchService switchService;
 	private IOFSwitch mockSwitch;
 	private MockDebugCounterService debugCounterService;
@@ -141,21 +147,21 @@ public class StaticFlowTests extends FloodlightTestCase {
 	static {
 		FlowMod3 = factory.buildFlowModify().build();
 		TestRule3 = new HashMap<String,Object>();
-		TestRule3.put(COLUMN_NAME, "TestRule3");
-		TestRule3.put(COLUMN_SWITCH, TestSwitch1DPID);
+		TestRule3.put(Columns.COLUMN_NAME, "TestRule3");
+		TestRule3.put(Columns.COLUMN_SWITCH, TestSwitch1DPID);
 		// setup match
 		Match match;
-		TestRule3.put(COLUMN_DL_DST, "00:20:30:40:50:60");
-		TestRule3.put(COLUMN_DL_VLAN, 96);
+		TestRule3.put(StaticEntryPusher.matchFieldToColumnName(MatchFields.ETH_DST), "00:20:30:40:50:60");
+		TestRule3.put(StaticEntryPusher.matchFieldToColumnName(MatchFields.VLAN_VID), 96);
 		match = MatchUtils.fromString("eth_dst=00:20:30:40:50:60,eth_vlan_vid=96", factory.getVersion());
 		// setup actions
-		TestRule3.put(COLUMN_ACTIONS, "output=controller");
+		TestRule3.put(Columns.COLUMN_ACTIONS, "output=controller");
 		List<OFAction> actions = new LinkedList<OFAction>();
 		actions.add(factory.actions().output(OFPort.CONTROLLER, Integer.MAX_VALUE));
 		// done
 		FlowMod3 = FlowMod3.createBuilder().setMatch(match)
 				.setActions(actions)
-		        .setFlags(Collections.singleton(OFFlowModFlags.SEND_FLOW_REM))
+				.setFlags(Collections.singleton(OFFlowModFlags.SEND_FLOW_REM))
 				.setBufferId(OFBufferId.NO_BUFFER)
 				.setOutPort(OFPort.ANY)
 				.setPriority(Integer.MAX_VALUE)
@@ -179,14 +185,21 @@ public class StaticFlowTests extends FloodlightTestCase {
 
 
 	private void verifyActions(OFFlowMod testFlowMod, OFFlowMod goodFlowMod) {
-		List<OFAction> goodActions = goodFlowMod.getActions();
-		List<OFAction> testActions = testFlowMod.getActions();
-		assertNotNull(goodActions);
-		assertNotNull(testActions);
-		assertEquals(goodActions.size(), testActions.size());
-		// assumes actions are marshalled in same order; should be safe
-		for(int i = 0; i < goodActions.size(); i++) {
-			assertEquals(goodActions.get(i), testActions.get(i));
+		if ((testFlowMod instanceof OFFlowDelete || 
+				testFlowMod instanceof OFFlowDeleteStrict) &&
+				(goodFlowMod instanceof OFFlowDelete || 
+						goodFlowMod instanceof OFFlowDeleteStrict)) {
+			log.warn("Not verifying actions of two flow-delete messages (they're undefined by design)");
+		} else {
+			List<OFAction> goodActions = goodFlowMod.getActions();
+			List<OFAction> testActions = testFlowMod.getActions();
+			assertNotNull(goodActions);
+			assertNotNull(testActions);
+			assertEquals(goodActions.size(), testActions.size());
+			// assumes actions are marshalled in same order; should be safe
+			for(int i = 0; i < goodActions.size(); i++) {
+				assertEquals(goodActions.get(i), testActions.get(i));
+			}
 		}
 	}
 
@@ -195,7 +208,7 @@ public class StaticFlowTests extends FloodlightTestCase {
 	public void setUp() throws Exception {
 		super.setUp();
 		debugCounterService = new MockDebugCounterService();
-		staticFlowEntryPusher = new StaticFlowEntryPusher();
+		pusher = new StaticEntryPusher();
 		switchService = getMockSwitchService();
 		storage = new MemoryStorageSource();
 		dpid = HexString.toLong(TestSwitch1DPID);
@@ -226,20 +239,20 @@ public class StaticFlowTests extends FloodlightTestCase {
 		restApi.init(fmc);
 		debugCounterService.init(fmc);
 		storage.init(fmc);
-		staticFlowEntryPusher.init(fmc);
+		pusher.init(fmc);
 		debugCounterService.init(fmc);
 		storage.startUp(fmc);
 
 		createStorageWithFlowEntries();
 
-		staticFlowEntryPusher.startUp(fmc);    // again, to hack unittest
+		pusher.startUp(fmc);    // again, to hack unittest
 	}
 
 	@Test
 	public void testStaticFlowPush() throws Exception {
 
 		// verify that flowpusher read all three entries from storage
-		assertEquals(TotalTestRules, staticFlowEntryPusher.countEntries());
+		assertEquals(TotalTestRules, pusher.countEntries());
 
 		// if someone calls mockSwitch.getOutputStream(), return mockOutStream instead
 		//expect(mockSwitch.getOutputStream()).andReturn(mockOutStream).anyTimes();
@@ -253,7 +266,7 @@ public class StaticFlowTests extends FloodlightTestCase {
 		replay(mockSwitch);
 
 		// hook the static pusher up to the fake switch
-		staticFlowEntryPusher.switchAdded(DatapathId.of(dpid));
+		pusher.switchAdded(DatapathId.of(dpid));
 
 		verify(mockSwitch);
 
@@ -274,10 +287,10 @@ public class StaticFlowTests extends FloodlightTestCase {
 
 		// delete two rules and verify they've been removed
 		// this should invoke staticFlowPusher.rowsDeleted()
-		storage.deleteRow(StaticFlowEntryPusher.TABLE_NAME, "TestRule1");
-		storage.deleteRow(StaticFlowEntryPusher.TABLE_NAME, "TestRule2");
+		storage.deleteRow(StaticEntryPusher.TABLE_NAME, "TestRule1");
+		storage.deleteRow(StaticEntryPusher.TABLE_NAME, "TestRule2");
 
-		assertEquals(1, staticFlowEntryPusher.countEntries());
+		assertEquals(1, pusher.countEntries());
 		assertEquals(2, writeCapture.getValues().size());
 
 		OFFlowMod firstDelete = (OFFlowMod) writeCapture.getValues().get(0);
@@ -292,8 +305,8 @@ public class StaticFlowTests extends FloodlightTestCase {
 		writeCapture.reset();
 		FlowMod2 = FlowModUtils.toFlowAdd(FlowMod2);
 		FlowMod2 = FlowMod2.createBuilder().setXid(12).build();
-		storage.insertRow(StaticFlowEntryPusher.TABLE_NAME, TestRule2);
-		assertEquals(2, staticFlowEntryPusher.countEntries());
+		storage.insertRow(StaticEntryPusher.TABLE_NAME, TestRule2);
+		assertEquals(2, pusher.countEntries());
 		assertEquals(1, writeCaptureList.getValues().size());
 		List<OFMessage> outList =
 				writeCaptureList.getValues().get(0);
@@ -304,9 +317,9 @@ public class StaticFlowTests extends FloodlightTestCase {
 		writeCaptureList.reset();
 
 		// now try an overwriting update, calling staticFlowPusher.rowUpdated()
-		TestRule3.put(COLUMN_DL_VLAN, 333);
-		storage.updateRow(StaticFlowEntryPusher.TABLE_NAME, TestRule3);
-		assertEquals(2, staticFlowEntryPusher.countEntries());
+		TestRule3.put(StaticEntryPusher.matchFieldToColumnName(MatchFields.VLAN_VID), 333);
+		storage.updateRow(StaticEntryPusher.TABLE_NAME, TestRule3);
+		assertEquals(2, pusher.countEntries());
 		assertEquals(1, writeCaptureList.getValues().size());
 
 		outList = writeCaptureList.getValues().get(0);
@@ -321,9 +334,9 @@ public class StaticFlowTests extends FloodlightTestCase {
 		writeCaptureList.reset();
 
 		// now try an action modifying update, calling staticFlowPusher.rowUpdated()
-		TestRule3.put(COLUMN_ACTIONS, "output=controller,pop_vlan"); // added pop-vlan
-		storage.updateRow(StaticFlowEntryPusher.TABLE_NAME, TestRule3);
-		assertEquals(2, staticFlowEntryPusher.countEntries());
+		TestRule3.put(StaticEntryPusher.Columns.COLUMN_ACTIONS, "output=controller,pop_vlan"); // added pop-vlan
+		storage.updateRow(StaticEntryPusher.TABLE_NAME, TestRule3);
+		assertEquals(2, pusher.countEntries());
 		assertEquals(1, writeCaptureList.getValues().size());
 
 		outList = writeCaptureList.getValues().get(0);
@@ -343,13 +356,13 @@ public class StaticFlowTests extends FloodlightTestCase {
 
 	IStorageSourceService populateStorageWithFlowEntries() {
 		Set<String> indexedColumns = new HashSet<String>();
-		indexedColumns.add(COLUMN_NAME);
-		storage.createTable(StaticFlowEntryPusher.TABLE_NAME, indexedColumns);
-		storage.setTablePrimaryKeyName(StaticFlowEntryPusher.TABLE_NAME, COLUMN_NAME);
+		indexedColumns.add(Columns.COLUMN_NAME);
+		storage.createTable(StaticEntryPusher.TABLE_NAME, indexedColumns);
+		storage.setTablePrimaryKeyName(StaticEntryPusher.TABLE_NAME, Columns.COLUMN_NAME);
 
-		storage.insertRow(StaticFlowEntryPusher.TABLE_NAME, TestRule1);
-		storage.insertRow(StaticFlowEntryPusher.TABLE_NAME, TestRule2);
-		storage.insertRow(StaticFlowEntryPusher.TABLE_NAME, TestRule3);
+		storage.insertRow(StaticEntryPusher.TABLE_NAME, TestRule1);
+		storage.insertRow(StaticEntryPusher.TABLE_NAME, TestRule2);
+		storage.insertRow(StaticEntryPusher.TABLE_NAME, TestRule3);
 
 		return storage;
 	}
@@ -357,25 +370,25 @@ public class StaticFlowTests extends FloodlightTestCase {
 	@Test
 	public void testHARoleChanged() throws IOException {
 
-		assert(staticFlowEntryPusher.entry2dpid.containsValue(TestSwitch1DPID));
-		assert(staticFlowEntryPusher.entriesFromStorage.containsValue(FlowMod1));
-		assert(staticFlowEntryPusher.entriesFromStorage.containsValue(FlowMod2));
-		assert(staticFlowEntryPusher.entriesFromStorage.containsValue(FlowMod3));
+		assert(pusher.entry2dpid.containsValue(TestSwitch1DPID));
+		assert(pusher.entriesFromStorage.containsValue(FlowMod1));
+		assert(pusher.entriesFromStorage.containsValue(FlowMod2));
+		assert(pusher.entriesFromStorage.containsValue(FlowMod3));
 
 		/* FIXME: what's the right behavior here ??
         // Send a notification that we've changed to slave
         mfp.dispatchRoleChanged(Role.SLAVE);
         // Make sure we've removed all our entries
-        assert(staticFlowEntryPusher.entry2dpid.isEmpty());
-        assert(staticFlowEntryPusher.entriesFromStorage.isEmpty());
+        assert(StaticEntryPusher.entry2dpid.isEmpty());
+        assert(StaticEntryPusher.entriesFromStorage.isEmpty());
 
         // Send a notification that we've changed to master
         mfp.dispatchRoleChanged(Role.MASTER);
         // Make sure we've learned the entries
-        assert(staticFlowEntryPusher.entry2dpid.containsValue(TestSwitch1DPID));
-        assert(staticFlowEntryPusher.entriesFromStorage.containsValue(FlowMod1));
-        assert(staticFlowEntryPusher.entriesFromStorage.containsValue(FlowMod2));
-        assert(staticFlowEntryPusher.entriesFromStorage.containsValue(FlowMod3));
+        assert(StaticEntryPusher.entry2dpid.containsValue(TestSwitch1DPID));
+        assert(StaticEntryPusher.entriesFromStorage.containsValue(FlowMod1));
+        assert(StaticEntryPusher.entriesFromStorage.containsValue(FlowMod2));
+        assert(StaticEntryPusher.entriesFromStorage.containsValue(FlowMod3));
 		 */
 	}
 }

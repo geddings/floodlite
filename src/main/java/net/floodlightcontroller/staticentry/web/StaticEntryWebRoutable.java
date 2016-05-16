@@ -14,7 +14,7 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.staticflowentry.web;
+package net.floodlightcontroller.staticentry.web;
 
 import net.floodlightcontroller.restserver.RestletRoutable;
 
@@ -22,16 +22,17 @@ import org.restlet.Context;
 import org.restlet.Restlet;
 import org.restlet.routing.Router;
 
-public class StaticFlowEntryWebRoutable implements RestletRoutable {
+public class StaticEntryWebRoutable implements RestletRoutable {
     /**
      * Create the Restlet router and bind to the proper resources.
      */
     @Override
     public Restlet getRestlet(Context context) {
         Router router = new Router(context);
-        router.attach("/json", StaticFlowEntryPusherResource.class);
-        router.attach("/clear/{switch}/json", ClearStaticFlowEntriesResource.class);
-        router.attach("/list/{switch}/json", ListStaticFlowEntriesResource.class);
+        router.attach("/json", StaticEntryPusherResource.class);
+        router.attach("/clear/{switch}/json", ClearStaticEntriesResource.class);
+        router.attach("/list/{switch}/json", ListStaticEntriesResource.class);
+        router.attach("/usage/json", StaticEntryUsageResource.class);
         return router;
     }
 

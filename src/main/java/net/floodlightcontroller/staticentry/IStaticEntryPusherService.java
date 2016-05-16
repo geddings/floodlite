@@ -14,16 +14,18 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.staticflowentry;
+package net.floodlightcontroller.staticentry;
 
 import java.util.Map;
 
 import org.projectfloodlight.openflow.protocol.OFFlowMod;
+import org.projectfloodlight.openflow.protocol.OFGroupMod;
+import org.projectfloodlight.openflow.protocol.OFMessage;
 import org.projectfloodlight.openflow.types.DatapathId;
 
 import net.floodlightcontroller.core.module.IFloodlightService;
 
-public interface IStaticFlowEntryPusherService extends IFloodlightService {
+public interface IStaticEntryPusherService extends IFloodlightService {
     /**
      * Adds a static flow.
      * @param name Name of the flow mod. Must be unique.
@@ -33,30 +35,38 @@ public interface IStaticFlowEntryPusherService extends IFloodlightService {
     public void addFlow(String name, OFFlowMod fm, DatapathId swDpid);
     
     /**
-     * Deletes a static flow
+     * Adds a static group.
+     * @param name Name of the group mod. Must be unique.
+     * @param gm The group to push.
+     * @param swDpid The switch DPID to push it to, in 00:00:00:00:00:00:00:01 notation.
+     */
+    public void addGroup(String name, OFGroupMod gm, DatapathId swDpid);
+    
+    /**
+     * Deletes a static flow or group entry
      * @param name The name of the static flow to delete.
      */
-    public void deleteFlow(String name);
+    public void deleteEntry(String name);
     
     /**
-     * Deletes all static flows for a particular switch
+     * Deletes all static flows and groups for a particular switch
      * @param dpid The DPID of the switch to delete flows for.
      */
-    public void deleteFlowsForSwitch(DatapathId dpid);
+    public void deleteEntriesForSwitch(DatapathId dpid);
     
     /**
-     * Deletes all flows.
+     * Deletes all flows and groups.
      */
-    public void deleteAllFlows();
+    public void deleteAllEntries();
     
     /**
-     * Gets all list of all flows
+     * Gets all list of all flows and groups
      */
-    public Map<String, Map<String, OFFlowMod>> getFlows();
+    public Map<String, Map<String, OFMessage>> getEntries();
     
     /**
-     * Gets a list of flows by switch
+     * Gets a list of flows and groups by switch
      */
-    public Map<String, OFFlowMod> getFlows(DatapathId dpid);
+    public Map<String, OFMessage> getEntries(DatapathId dpid);
 
 }

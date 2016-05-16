@@ -14,19 +14,21 @@
  *    under the License.
  **/
 
-package net.floodlightcontroller.staticflowentry;
+package net.floodlightcontroller.staticentry;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import net.floodlightcontroller.core.FloodlightContext;
 import net.floodlightcontroller.core.HAListenerTypeMarker;
@@ -43,155 +45,88 @@ import net.floodlightcontroller.core.module.IFloodlightModule;
 import net.floodlightcontroller.core.module.IFloodlightService;
 import net.floodlightcontroller.core.util.AppCookie;
 import net.floodlightcontroller.restserver.IRestApiService;
-import net.floodlightcontroller.staticflowentry.web.StaticFlowEntryWebRoutable;
+import net.floodlightcontroller.staticentry.web.StaticEntryWebRoutable;
 import net.floodlightcontroller.storage.IResultSet;
 import net.floodlightcontroller.storage.IStorageSourceListener;
 import net.floodlightcontroller.storage.IStorageSourceService;
 import net.floodlightcontroller.storage.StorageException;
 import net.floodlightcontroller.util.ActionUtils;
 import net.floodlightcontroller.util.FlowModUtils;
+import net.floodlightcontroller.util.GroupUtils;
 import net.floodlightcontroller.util.InstructionUtils;
 import net.floodlightcontroller.util.MatchUtils;
 
 import org.projectfloodlight.openflow.protocol.OFFactories;
 import org.projectfloodlight.openflow.protocol.OFFlowAdd;
-import org.projectfloodlight.openflow.protocol.OFFlowDeleteStrict;
 import org.projectfloodlight.openflow.protocol.OFFlowMod;
 import org.projectfloodlight.openflow.protocol.OFFlowRemoved;
 import org.projectfloodlight.openflow.protocol.OFFlowRemovedReason;
+import org.projectfloodlight.openflow.protocol.OFGroupMod;
+import org.projectfloodlight.openflow.protocol.OFInstructionType;
 import org.projectfloodlight.openflow.protocol.OFPortDesc;
 import org.projectfloodlight.openflow.protocol.OFMessage;
 import org.projectfloodlight.openflow.protocol.OFType;
 import org.projectfloodlight.openflow.protocol.OFVersion;
-import org.projectfloodlight.openflow.protocol.ver10.OFFlowRemovedReasonSerializerVer10;
-import org.projectfloodlight.openflow.protocol.ver11.OFFlowRemovedReasonSerializerVer11;
-import org.projectfloodlight.openflow.protocol.ver12.OFFlowRemovedReasonSerializerVer12;
-import org.projectfloodlight.openflow.protocol.ver13.OFFlowRemovedReasonSerializerVer13;
-import org.projectfloodlight.openflow.protocol.ver14.OFFlowRemovedReasonSerializerVer14;
+import org.projectfloodlight.openflow.protocol.match.MatchFields;
 import org.projectfloodlight.openflow.types.DatapathId;
 import org.projectfloodlight.openflow.types.TableId;
-import org.projectfloodlight.openflow.types.U16;
+import org.projectfloodlight.openflow.types.U32;
 import org.projectfloodlight.openflow.types.U64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.collect.ImmutableSet;
+
 /**
  * This module is responsible for maintaining a set of static flows on
- * switches. This is just a big 'ol dumb list of flows and something external
+ * switches. This is just a big 'ol dumb list of flows and groups and something external
  * is responsible for ensuring they make sense for the network.
  */
-public class StaticFlowEntryPusher
-implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, IStorageSourceListener, IOFMessageListener {
-	protected static Logger log = LoggerFactory.getLogger(StaticFlowEntryPusher.class);
-	public static final String StaticFlowName = "staticflowentry";
+public class StaticEntryPusher
+implements IOFSwitchListener, IFloodlightModule, IStaticEntryPusherService, IStorageSourceListener, IOFMessageListener {
+	protected static Logger log = LoggerFactory.getLogger(StaticEntryPusher.class);
+	public static final String MODULE_NAME = "staticentrypusher";
 
-	public static final int STATIC_FLOW_APP_ID = 10;
+	public static final int STATIC_ENTRY_APP_ID = 10;
 	static {
-		AppCookie.registerApp(STATIC_FLOW_APP_ID, StaticFlowName);
+		AppCookie.registerApp(STATIC_ENTRY_APP_ID, MODULE_NAME);
 	}
 
-	public static final String TABLE_NAME = "controller_staticflowtableentry";
-	public static final String COLUMN_NAME = "name";
-	public static final String COLUMN_SWITCH = "switch";
-	public static final String COLUMN_TABLE_ID = "table";
-	public static final String COLUMN_ACTIVE = "active";
-	public static final String COLUMN_IDLE_TIMEOUT = "idle_timeout";
-	public static final String COLUMN_HARD_TIMEOUT = "hard_timeout";
-	public static final String COLUMN_PRIORITY = "priority";
-	public static final String COLUMN_COOKIE = "cookie";
+	public static final String TABLE_NAME = "controller_staticentrytable";
 
-	// Common location for Match Strings. Still the same, but relocated.
-	public static final String COLUMN_IN_PORT = MatchUtils.STR_IN_PORT;
+	public static class Columns {
+		public static final String COLUMN_NAME = "name";
+		public static final String COLUMN_ENTRY_TYPE = "entry_type";
+		public static final String ENTRY_TYPE_FLOW = "flow";
+		public static final String ENTRY_TYPE_GROUP = "group";
+		public static final String COLUMN_SWITCH = "switch";
+		public static final String COLUMN_TABLE_ID = "table";
+		public static final String COLUMN_ACTIVE = "active";
+		public static final String COLUMN_IDLE_TIMEOUT = "idle_timeout";
+		public static final String COLUMN_HARD_TIMEOUT = "hard_timeout";
+		public static final String COLUMN_PRIORITY = "priority";
+		public static final String COLUMN_COOKIE = "cookie";
 
-	public static final String COLUMN_DL_SRC = MatchUtils.STR_DL_SRC;
-	public static final String COLUMN_DL_DST = MatchUtils.STR_DL_DST;
-	public static final String COLUMN_DL_VLAN = MatchUtils.STR_DL_VLAN;
-	public static final String COLUMN_DL_VLAN_PCP = MatchUtils.STR_DL_VLAN_PCP;
-	public static final String COLUMN_DL_TYPE = MatchUtils.STR_DL_TYPE;
+		/* NOTE: Use MatchUtil's names for MatchField column names */
 
-	public static final String COLUMN_NW_TOS = MatchUtils.STR_NW_TOS;
-	public static final String COLUMN_NW_ECN = MatchUtils.STR_NW_ECN;
-	public static final String COLUMN_NW_DSCP = MatchUtils.STR_NW_DSCP;
-	public static final String COLUMN_NW_PROTO = MatchUtils.STR_NW_PROTO;
-	public static final String COLUMN_NW_SRC = MatchUtils.STR_NW_SRC; // includes CIDR-style netmask, e.g. "128.8.128.0/24"
-	public static final String COLUMN_NW_DST = MatchUtils.STR_NW_DST;
+		/* 
+		 * Support for OF1.0 generic transport ports (possibly from the REST API). 
+		 * Only use these to read them in, but store them as the type of port their IpProto
+		 */
+		public static final String COLUMN_NW_TOS = MatchUtils.STR_NW_TOS;
+		public static final String COLUMN_TP_SRC = MatchUtils.STR_TP_SRC;
+		public static final String COLUMN_TP_DST = MatchUtils.STR_TP_DST;
 
-	public static final String COLUMN_SCTP_SRC = MatchUtils.STR_SCTP_SRC;
-	public static final String COLUMN_SCTP_DST = MatchUtils.STR_SCTP_DST;
-	public static final String COLUMN_UDP_SRC = MatchUtils.STR_UDP_SRC;
-	public static final String COLUMN_UDP_DST = MatchUtils.STR_UDP_DST;
-	public static final String COLUMN_TCP_SRC = MatchUtils.STR_TCP_SRC;
-	public static final String COLUMN_TCP_DST = MatchUtils.STR_TCP_DST;
-	public static final String COLUMN_TP_SRC = MatchUtils.STR_TP_SRC; // support for OF1.0 generic transport ports (possibly sent from the rest api). Only use these to read them in, but store them as the type of port their IpProto is set to.
-	public static final String COLUMN_TP_DST = MatchUtils.STR_TP_DST;
+		public static final String COLUMN_ACTIONS = "actions";
 
-	/* newly added matches for OF1.3 port start here */
-	public static final String COLUMN_ICMP_TYPE = MatchUtils.STR_ICMP_TYPE;
-	public static final String COLUMN_ICMP_CODE = MatchUtils.STR_ICMP_CODE;
+		/* NOTE: Use InstructionUtil's names for Instruction column names */
 
-	public static final String COLUMN_ARP_OPCODE = MatchUtils.STR_ARP_OPCODE;
-	public static final String COLUMN_ARP_SHA = MatchUtils.STR_ARP_SHA;
-	public static final String COLUMN_ARP_DHA = MatchUtils.STR_ARP_DHA;
-	public static final String COLUMN_ARP_SPA = MatchUtils.STR_ARP_SPA;
-	public static final String COLUMN_ARP_DPA = MatchUtils.STR_ARP_DPA;
+		public static final String COLUMN_GROUP_TYPE = GroupUtils.GROUP_TYPE;
+		public static final String COLUMN_GROUP_BUCKETS = GroupUtils.GROUP_BUCKETS;
+		public static final String COLUMN_GROUP_ID = GroupUtils.GROUP_ID;
 
-	/* IPv6 related columns */
-	public static final String COLUMN_NW6_SRC = MatchUtils.STR_IPV6_SRC;
-	public static final String COLUMN_NW6_DST = MatchUtils.STR_IPV6_DST;
-	public static final String COLUMN_IPV6_FLOW_LABEL = MatchUtils.STR_IPV6_FLOW_LABEL;
-	public static final String COLUMN_ICMP6_TYPE = MatchUtils.STR_ICMPV6_TYPE;
-	public static final String COLUMN_ICMP6_CODE = MatchUtils.STR_ICMPV6_CODE;
-	public static final String COLUMN_ND_SLL = MatchUtils.STR_IPV6_ND_SSL;
-	public static final String COLUMN_ND_TLL = MatchUtils.STR_IPV6_ND_TTL;
-	public static final String COLUMN_ND_TARGET = MatchUtils.STR_IPV6_ND_TARGET;	
-
-	public static final String COLUMN_MPLS_LABEL = MatchUtils.STR_MPLS_LABEL;
-	public static final String COLUMN_MPLS_TC = MatchUtils.STR_MPLS_TC;
-	public static final String COLUMN_MPLS_BOS = MatchUtils.STR_MPLS_BOS;
-
-	public static final String COLUMN_METADATA = MatchUtils.STR_METADATA;
-	public static final String COLUMN_TUNNEL_ID = MatchUtils.STR_TUNNEL_ID;
-
-	public static final String COLUMN_PBB_ISID = MatchUtils.STR_PBB_ISID;
-	/* end newly added matches */
-
-	public static final String COLUMN_ACTIONS = "actions";
-
-	public static final String COLUMN_INSTR_GOTO_TABLE = InstructionUtils.STR_GOTO_TABLE; // instructions are each getting their own column, due to write and apply actions, which themselves contain a variable list of actions
-	public static final String COLUMN_INSTR_WRITE_METADATA = InstructionUtils.STR_WRITE_METADATA;
-	public static final String COLUMN_INSTR_WRITE_ACTIONS = InstructionUtils.STR_WRITE_ACTIONS;
-	public static final String COLUMN_INSTR_APPLY_ACTIONS = InstructionUtils.STR_APPLY_ACTIONS;
-	public static final String COLUMN_INSTR_CLEAR_ACTIONS = InstructionUtils.STR_CLEAR_ACTIONS;
-	public static final String COLUMN_INSTR_GOTO_METER = InstructionUtils.STR_GOTO_METER;
-	public static final String COLUMN_INSTR_EXPERIMENTER = InstructionUtils.STR_EXPERIMENTER;
-
-	public static String ColumnNames[] = { COLUMN_NAME, COLUMN_SWITCH,
-		COLUMN_TABLE_ID, COLUMN_ACTIVE, COLUMN_IDLE_TIMEOUT, COLUMN_HARD_TIMEOUT, // table id is new for OF1.3 as well
-		COLUMN_PRIORITY, COLUMN_COOKIE, COLUMN_IN_PORT,
-		COLUMN_DL_SRC, COLUMN_DL_DST, COLUMN_DL_VLAN, COLUMN_DL_VLAN_PCP,
-		COLUMN_DL_TYPE, COLUMN_NW_TOS, COLUMN_NW_PROTO, COLUMN_NW_SRC,
-		COLUMN_NW_DST, COLUMN_TP_SRC, COLUMN_TP_DST,
-		/* newly added matches for OF1.3 port start here */
-		COLUMN_SCTP_SRC, COLUMN_SCTP_DST, 
-		COLUMN_UDP_SRC, COLUMN_UDP_DST, COLUMN_TCP_SRC, COLUMN_TCP_DST,
-		COLUMN_ICMP_TYPE, COLUMN_ICMP_CODE, 
-		COLUMN_ARP_OPCODE, COLUMN_ARP_SHA, COLUMN_ARP_DHA, 
-		COLUMN_ARP_SPA, COLUMN_ARP_DPA,
-
-		/* IPv6 related matches */
-		COLUMN_NW6_SRC, COLUMN_NW6_DST, COLUMN_ICMP6_TYPE, COLUMN_ICMP6_CODE, 
-		COLUMN_IPV6_FLOW_LABEL, COLUMN_ND_SLL, COLUMN_ND_TLL, COLUMN_ND_TARGET,		
-		COLUMN_MPLS_LABEL, COLUMN_MPLS_TC, COLUMN_MPLS_BOS, 
-		COLUMN_METADATA, COLUMN_TUNNEL_ID, COLUMN_PBB_ISID,
-		/* end newly added matches */
-		COLUMN_ACTIONS,
-		/* newly added instructions for OF1.3 port start here */
-		COLUMN_INSTR_GOTO_TABLE, COLUMN_INSTR_WRITE_METADATA,
-		COLUMN_INSTR_WRITE_ACTIONS, COLUMN_INSTR_APPLY_ACTIONS,
-		COLUMN_INSTR_CLEAR_ACTIONS, COLUMN_INSTR_GOTO_METER,
-		COLUMN_INSTR_EXPERIMENTER
-		/* end newly added instructions */
-	};
+		private static Set<String> ALL_COLUMNS;	/* Use internally to query only */
+	}
 
 	protected IFloodlightProviderService floodlightProviderService;
 	protected IOFSwitchService switchService;
@@ -200,8 +135,8 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 
 	private IHAListener haListener;
 
-	// Map<DPID, Map<Name, FlowMod>>; FlowMod can be null to indicate non-active
-	protected Map<String, Map<String, OFFlowMod>> entriesFromStorage;
+	// Map<DPID, Map<Name, OFMessage>>; OFMessage can be null to indicate non-active
+	protected Map<String, Map<String, OFMessage>> entriesFromStorage;
 	// Entry Name -> DPID of Switch it's on
 	protected Map<String, String> entry2dpid;
 
@@ -213,14 +148,31 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		}
 		@Override
 		public int compare(String o1, String o2) {
-			OFFlowMod f1 = entriesFromStorage.get(dpid).get(o1);
-			OFFlowMod f2 = entriesFromStorage.get(dpid).get(o2);
-			if (f1 == null || f2 == null) // sort active=false flows by key
+			OFMessage m1 = entriesFromStorage.get(dpid).get(o1);
+			OFMessage m2 = entriesFromStorage.get(dpid).get(o2);
+			if (m1 == null || m2 == null) {// sort active=false flows by key
 				return o1.compareTo(o2);
-			return U16.of(f1.getPriority()).getValue() - U16.of(f2.getPriority()).getValue();
+			}
+			if (m1 instanceof OFFlowMod && m2 instanceof OFFlowMod) {
+				return (int) (U32.of(((OFFlowMod) m1).getPriority()).getValue() - U32.of(((OFFlowMod) m2).getPriority()).getValue());
+			} else if (m1 instanceof OFFlowMod) {
+				return 1;
+			} else if (m2 instanceof OFFlowMod) {
+				return -1;
+			} else {
+				return 0;
+			}
 		}
 	};
 
+	public static String matchFieldToColumnName(MatchFields mf) {
+		return MatchUtils.getMatchFieldName(mf);
+	}
+	
+	public static String intructionToColumnName(OFInstructionType t) {
+		return InstructionUtils.getInstructionName(t);
+	}
+	
 	/**
 	 * used for debugging and unittests
 	 * @return the number of static flow entries as cached from storage
@@ -268,17 +220,17 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		String stringId = sw.getId().toString();
 
 		if ((entriesFromStorage != null) && (entriesFromStorage.containsKey(stringId))) {
-			Map<String, OFFlowMod> entries = entriesFromStorage.get(stringId);
+			Map<String, OFMessage> entries = entriesFromStorage.get(stringId);
 			List<String> sortedList = new ArrayList<String>(entries.keySet());
 			// weird that Collections.sort() returns void
 			Collections.sort( sortedList, new FlowModSorter(stringId));
 			for (String entryName : sortedList) {
-				OFFlowMod flowMod = entries.get(entryName);
-				if (flowMod != null) {
+				OFMessage message = entries.get(entryName);
+				if (message != null) {
 					if (log.isDebugEnabled()) {
 						log.debug("Pushing static entry {} for {}", stringId, entryName);
 					}
-					writeFlowModToSwitch(sw, flowMod);
+					writeOFMessageToSwitch(sw.getId(), message);
 				}
 			}
 		}
@@ -292,7 +244,7 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	 */
 
 	protected Map<String, String> computeEntry2DpidMap(
-			Map<String, Map<String, OFFlowMod>> map) {
+			Map<String, Map<String, OFMessage>> map) {
 		Map<String, String> ret = new ConcurrentHashMap<String, String>();
 		for(String dpid : map.keySet()) {
 			for( String entry: map.get(dpid).keySet())
@@ -306,12 +258,12 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	 *
 	 * @return
 	 */
-	private Map<String, Map<String, OFFlowMod>> readEntriesFromStorage() {
-		Map<String, Map<String, OFFlowMod>> entries = new ConcurrentHashMap<String, Map<String, OFFlowMod>>();
+	private Map<String, Map<String, OFMessage>> readEntriesFromStorage() {
+		Map<String, Map<String, OFMessage>> entries = new ConcurrentHashMap<String, Map<String, OFMessage>>();
 		try {
 			Map<String, Object> row;
 			// null1=no predicate, null2=no ordering
-			IResultSet resultSet = storageSourceService.executeQuery(TABLE_NAME, ColumnNames, null, null);
+			IResultSet resultSet = storageSourceService.executeQuery(TABLE_NAME, Columns.ALL_COLUMNS.toArray(new String[Columns.ALL_COLUMNS.size()]), null, null);
 			for (Iterator<IResultSet> it = resultSet.iterator(); it.hasNext();) {
 				row = it.next().getRow();
 				parseRow(row, entries);
@@ -325,37 +277,53 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	}
 
 	/**
-	 * Take a single row, turn it into a flowMod, and add it to the
-	 * entries{$dpid}.{$entryName}=FlowMod
-	 *
-	 * IF an entry is in active, mark it with FlowMod = null
+	 * Take a single row, turn it into a entry.
+	 * If an entry is inactive, mark it with null
 	 *
 	 * @param row
 	 * @param entries
 	 */
-	void parseRow(Map<String, Object> row, Map<String, Map<String, OFFlowMod>> entries) {
+	void parseRow(Map<String, Object> row, Map<String, Map<String, OFMessage>> entries) {
 		String switchName = null;
 		String entryName = null;
+		String entryType = Columns.ENTRY_TYPE_FLOW;
 
 		StringBuffer matchString = new StringBuffer();
 		OFFlowMod.Builder fmb = null; 
+		OFGroupMod.Builder gmb = null;
 
-		if (!row.containsKey(COLUMN_SWITCH) || !row.containsKey(COLUMN_NAME)) {
-			log.debug("skipping entry with missing required 'switch' or 'name' entry: {}", row);
+		if (!row.containsKey(Columns.COLUMN_SWITCH) || !row.containsKey(Columns.COLUMN_NAME)) {
+			log.warn("Skipping entry with missing required 'switch' or 'name' entry: {}", row);
 			return;
 		}
-		// most error checking done with ClassCastException
+		
 		try {
-			// first, snag the required entries, for debugging info
-			switchName = (String) row.get(COLUMN_SWITCH);
-			entryName = (String) row.get(COLUMN_NAME);
+			switchName = (String) row.get(Columns.COLUMN_SWITCH);
+			entryName = (String) row.get(Columns.COLUMN_NAME);
+
+			String tmp = (String) row.get(Columns.COLUMN_ENTRY_TYPE);
+			if (tmp != null) {
+				tmp = tmp.toLowerCase().trim();
+				if (tmp.equals(Columns.ENTRY_TYPE_GROUP)) {
+					entryType = Columns.ENTRY_TYPE_GROUP;
+				}
+			} /* else use default of flow */
+
 			if (!entries.containsKey(switchName)) {
-				entries.put(switchName, new HashMap<String, OFFlowMod>());
+				entries.put(switchName, new HashMap<String, OFMessage>());
 			}
 
-			// get the correct builder for the OF version supported by the switch
+			/* get the correct builder for the OF version supported by the switch */
 			try {
-				fmb = OFFactories.getFactory(switchService.getSwitch(DatapathId.of(switchName)).getOFFactory().getVersion()).buildFlowModify();
+				if (entryType.equals(Columns.ENTRY_TYPE_FLOW)) {
+					fmb = OFFactories.getFactory(switchService.getSwitch(DatapathId.of(switchName)).getOFFactory().getVersion()).buildFlowModify();
+					StaticEntries.initDefaultFlowMod(fmb, entryName);
+				} else if (entryType.equals(Columns.ENTRY_TYPE_GROUP)) {
+					gmb = OFFactories.getFactory(switchService.getSwitch(DatapathId.of(switchName)).getOFFactory().getVersion()).buildGroupModify();
+				} else {
+					log.error("Not adding a flow or a group? Possible Static Flow Pusher bug");
+					return;
+				}
 			} catch (NullPointerException e) {
 				/* switch was not connected/known */
 				storageSourceService.deleteRowAsync(TABLE_NAME, entryName);
@@ -363,54 +331,66 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 				return;
 			}
 
-			StaticFlowEntries.initDefaultFlowMod(fmb, entryName);
-
 			for (String key : row.keySet()) {
 				if (row.get(key) == null) {
 					continue;
 				}
 
-				if (key.equals(COLUMN_SWITCH) || key.equals(COLUMN_NAME) || key.equals("id")) {
+				if (key.equals(Columns.COLUMN_SWITCH) || key.equals(Columns.COLUMN_NAME)) {
 					continue; // already handled
 				}
 
-				if (key.equals(COLUMN_ACTIVE)) {
-					if  (!Boolean.valueOf((String) row.get(COLUMN_ACTIVE))) {
+				if (key.equals(Columns.COLUMN_ACTIVE)) {
+					if (!Boolean.valueOf((String) row.get(Columns.COLUMN_ACTIVE))) {
 						log.debug("skipping inactive entry {} for switch {}", entryName, switchName);
 						entries.get(switchName).put(entryName, null);  // mark this an inactive
 						return;
 					}
-				} else if (key.equals(COLUMN_HARD_TIMEOUT)) {
-					fmb.setHardTimeout(Integer.valueOf((String) row.get(COLUMN_HARD_TIMEOUT)));
-				} else if (key.equals(COLUMN_IDLE_TIMEOUT)) {
-					fmb.setIdleTimeout(Integer.valueOf((String) row.get(COLUMN_IDLE_TIMEOUT)));
-				} else if (key.equals(COLUMN_TABLE_ID)) {
+				} else if (key.equals(Columns.COLUMN_HARD_TIMEOUT) && fmb != null) {
+					fmb.setHardTimeout(Integer.valueOf((String) row.get(Columns.COLUMN_HARD_TIMEOUT)));
+				} else if (key.equals(Columns.COLUMN_IDLE_TIMEOUT) && fmb != null) {
+					fmb.setIdleTimeout(Integer.valueOf((String) row.get(Columns.COLUMN_IDLE_TIMEOUT)));
+				} else if (key.equals(Columns.COLUMN_TABLE_ID) && fmb != null) {
 					if (fmb.getVersion().compareTo(OFVersion.OF_10) > 0) {
 						fmb.setTableId(TableId.of(Integer.parseInt((String) row.get(key)))); // support multiple flow tables for OF1.1+
 					} else {
 						log.error("Table not supported in OpenFlow 1.0");
 					}
-				} else if (key.equals(COLUMN_ACTIONS)) {
-					ActionUtils.fromString(fmb, (String) row.get(COLUMN_ACTIONS), log);
-				} else if (key.equals(COLUMN_COOKIE)) {
-					fmb.setCookie(StaticFlowEntries.computeEntryCookie(Integer.valueOf((String) row.get(COLUMN_COOKIE)), entryName));
-				} else if (key.equals(COLUMN_PRIORITY)) {
-					fmb.setPriority(U16.t(Integer.valueOf((String) row.get(COLUMN_PRIORITY))));
-				} else if (key.equals(COLUMN_INSTR_APPLY_ACTIONS)) {
-					InstructionUtils.applyActionsFromString(fmb, (String) row.get(COLUMN_INSTR_APPLY_ACTIONS), log);
-				} else if (key.equals(COLUMN_INSTR_CLEAR_ACTIONS)) {
-					InstructionUtils.clearActionsFromString(fmb, (String) row.get(COLUMN_INSTR_CLEAR_ACTIONS), log);
-				} else if (key.equals(COLUMN_INSTR_EXPERIMENTER)) {
-					InstructionUtils.experimenterFromString(fmb, (String) row.get(COLUMN_INSTR_EXPERIMENTER), log);
-				} else if (key.equals(COLUMN_INSTR_GOTO_METER)) {
-					InstructionUtils.meterFromString(fmb, (String) row.get(COLUMN_INSTR_GOTO_METER), log);
-				} else if (key.equals(COLUMN_INSTR_GOTO_TABLE)) {
-					InstructionUtils.gotoTableFromString(fmb, (String) row.get(COLUMN_INSTR_GOTO_TABLE), log);
-				} else if (key.equals(COLUMN_INSTR_WRITE_ACTIONS)) {
-					InstructionUtils.writeActionsFromString(fmb, (String) row.get(COLUMN_INSTR_WRITE_ACTIONS), log);
-				} else if (key.equals(COLUMN_INSTR_WRITE_METADATA)) {
-					InstructionUtils.writeMetadataFromString(fmb, (String) row.get(COLUMN_INSTR_WRITE_METADATA), log);
-				} else { // the rest of the keys are for Match().fromString()
+				} else if (key.equals(Columns.COLUMN_ACTIONS) && fmb != null) {
+					ActionUtils.fromString(fmb, (String) row.get(Columns.COLUMN_ACTIONS));
+				} else if (key.equals(Columns.COLUMN_COOKIE) && fmb != null) {
+					fmb.setCookie(StaticEntries.computeEntryCookie(Integer.valueOf((String) row.get(Columns.COLUMN_COOKIE)), entryName));
+				} else if (key.equals(Columns.COLUMN_PRIORITY) && fmb != null) {
+					fmb.setPriority(U32.t(Integer.valueOf((String) row.get(Columns.COLUMN_PRIORITY))));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.APPLY_ACTIONS)) && fmb != null) {
+					InstructionUtils.applyActionsFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.APPLY_ACTIONS)));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.CLEAR_ACTIONS)) && fmb != null) {
+					InstructionUtils.clearActionsFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.CLEAR_ACTIONS)));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.EXPERIMENTER)) && fmb != null) {
+					InstructionUtils.experimenterFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.EXPERIMENTER)));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.METER)) && fmb != null) {
+					InstructionUtils.meterFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.METER)));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.GOTO_TABLE)) && fmb != null) {
+					InstructionUtils.gotoTableFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.GOTO_TABLE)));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.WRITE_ACTIONS)) && fmb != null) {
+					InstructionUtils.writeActionsFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.WRITE_ACTIONS)));
+				} else if (key.equals(StaticEntryPusher.intructionToColumnName(OFInstructionType.WRITE_METADATA)) && fmb != null) {
+					InstructionUtils.writeMetadataFromString(fmb, 
+							(String) row.get(StaticEntryPusher.intructionToColumnName(OFInstructionType.WRITE_METADATA)));
+				} else if (key.equals(Columns.COLUMN_GROUP_TYPE) && gmb != null) {
+					GroupUtils.setGroupTypeFromString(gmb, (String) row.get(Columns.COLUMN_GROUP_TYPE));
+				} else if (key.equals(Columns.COLUMN_GROUP_BUCKETS) && gmb != null) {
+					GroupUtils.setGroupBucketsFromJsonArray(gmb, (String) row.get(Columns.COLUMN_GROUP_BUCKETS));
+				} else if (key.equals(Columns.COLUMN_GROUP_ID) && gmb != null) {
+					GroupUtils.setGroupIdFromString(gmb, (String) row.get(Columns.COLUMN_GROUP_ID));
+				} else if (fmb != null) { // the rest of the keys are for Match().fromString()
+
 					if (matchString.length() > 0) {
 						matchString.append(",");
 					}
@@ -425,21 +405,26 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 			}
 		}
 
-		String match = matchString.toString();
+		if (fmb != null) {
+			String match = matchString.toString();
 
-		try {
-			fmb.setMatch(MatchUtils.fromString(match, fmb.getVersion()));
-		} catch (IllegalArgumentException e) {
-			log.error(e.toString());
-			log.error("Ignoring flow entry {} on switch {} with illegal OFMatch() key: " + match, entryName, switchName);
-			return;
-		} catch (Exception e) {
-			log.error("OF version incompatible for the match: " + match);
-			e.printStackTrace();
-			return;
+			try {
+				fmb.setMatch(MatchUtils.fromString(match, fmb.getVersion()));
+			} catch (IllegalArgumentException e) {
+				log.error(e.toString());
+				log.error("Ignoring flow entry {} on switch {} with illegal OFMatch() key: " + match, entryName, switchName);
+				return;
+			} catch (Exception e) {
+				log.error("OF version incompatible for the match: " + match);
+				e.printStackTrace();
+				return;
+			}
+			entries.get(switchName).put(entryName, fmb.build());
+		} else if (gmb != null) {
+			entries.get(switchName).put(entryName, gmb.build());
+		} else {
+			log.error("Processed neither flow nor group mod. Possible Static Flow Pusher bug");
 		}
-
-		entries.get(switchName).put(entryName, fmb.build()); // add the FlowMod message to the table
 	}
 
 	@Override
@@ -456,29 +441,21 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	}
 
 	@Override
-	public void switchActivated(DatapathId switchId) {
-		// no-op
-	}
+	public void switchActivated(DatapathId switchId) {}
 
 	@Override
-	public void switchChanged(DatapathId switchId) {
-		// no-op
-	}
+	public void switchChanged(DatapathId switchId) {}
 
 	@Override
-	public void switchPortChanged(DatapathId switchId,
-			OFPortDesc port,
-			PortChangeType type) {
-		// no-op
-	}
+	public void switchPortChanged(DatapathId switchId, OFPortDesc port, PortChangeType type) {}
 
 
 	@Override
 	public void rowsModified(String tableName, Set<Object> rowKeys) {
 		// This handles both rowInsert() and rowUpdate()
 		log.debug("Modifying Table {}", tableName);
-		HashMap<String, Map<String, OFFlowMod>> entriesToAdd =
-				new HashMap<String, Map<String, OFFlowMod>>();
+		HashMap<String, Map<String, OFMessage>> entriesToAdd =
+				new HashMap<String, Map<String, OFMessage>>();
 		// build up list of what was added
 		for (Object key: rowKeys) {
 			IResultSet resultSet = storageSourceService.getRow(tableName, key);
@@ -491,60 +468,113 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		// batch updates by switch and blast them out
 		for (String dpid : entriesToAdd.keySet()) {
 			if (!entriesFromStorage.containsKey(dpid))
-				entriesFromStorage.put(dpid, new HashMap<String, OFFlowMod>());
+				entriesFromStorage.put(dpid, new HashMap<String, OFMessage>());
 
 			List<OFMessage> outQueue = new ArrayList<OFMessage>();
 
 			/* For every flow per dpid, decide how to "add" the flow. */
 			for (String entry : entriesToAdd.get(dpid).keySet()) {
-				OFFlowMod newFlowMod = entriesToAdd.get(dpid).get(entry);
+				OFFlowMod newFlowMod = null;
 				OFFlowMod oldFlowMod = null;
+				OFGroupMod newGroupMod = null;
+				OFGroupMod oldGroupMod = null;
 
-				String dpidOldFlowMod = entry2dpid.get(entry);
-				if (dpidOldFlowMod != null) {
-					oldFlowMod = entriesFromStorage.get(dpidOldFlowMod).remove(entry);
+				if (entriesToAdd.get(dpid).get(entry) instanceof OFFlowMod) {
+					newFlowMod = (OFFlowMod) entriesToAdd.get(dpid).get(entry);
+				} else if (entriesToAdd.get(dpid).get(entry) instanceof OFGroupMod) {
+					newGroupMod = (OFGroupMod) entriesToAdd.get(dpid).get(entry);
 				}
+				final boolean isFlowMod = newFlowMod == null ? false : true;
 
-				/* Modify, which can be either a Flow MODIFY_STRICT or a Flow DELETE_STRICT with a side of Flow ADD */
-				if (oldFlowMod != null && newFlowMod != null) { 
-					/* MODIFY_STRICT b/c the match is still the same */
-					if (oldFlowMod.getMatch().equals(newFlowMod.getMatch())
-							&& oldFlowMod.getCookie().equals(newFlowMod.getCookie())
-							&& oldFlowMod.getPriority() == newFlowMod.getPriority()
-							&& dpidOldFlowMod.equalsIgnoreCase(dpid)) {
-						log.debug("ModifyStrict SFP Flow");
-						entriesFromStorage.get(dpid).put(entry, newFlowMod);
-						entry2dpid.put(entry, dpid);
-						newFlowMod = FlowModUtils.toFlowModifyStrict(newFlowMod);
-						outQueue.add(newFlowMod);
-						/* DELETE_STRICT and then ADD b/c the match is now different */
-					} else {
-						log.debug("DeleteStrict and Add SFP Flow");
-						oldFlowMod = FlowModUtils.toFlowDeleteStrict(oldFlowMod);
-						OFFlowAdd addTmp = FlowModUtils.toFlowAdd(newFlowMod);
-						/* If the flow's dpid and the current switch we're looking at are the same, add to the queue. */
-						if (dpidOldFlowMod.equals(dpid)) {
-							outQueue.add(oldFlowMod);
-							outQueue.add(addTmp); 
-							/* Otherwise, go ahead and send the flows now (since queuing them will send to the wrong switch). */
+
+				String oldDpid = entry2dpid.get(entry);
+
+				if (isFlowMod) {
+					if (oldDpid != null) {
+						oldFlowMod = (OFFlowMod) entriesFromStorage.get(oldDpid).remove(entry);
+					} 
+
+					/* Modify, which can be either a Flow MODIFY_STRICT or a Flow DELETE_STRICT with a side of Flow ADD */
+					if (oldFlowMod != null && newFlowMod != null) { 
+						/* MODIFY_STRICT b/c the match is still the same */
+						if (oldFlowMod.getMatch().equals(newFlowMod.getMatch())
+								&& oldFlowMod.getCookie().equals(newFlowMod.getCookie())
+								&& oldFlowMod.getPriority() == newFlowMod.getPriority()
+								&& oldDpid.equalsIgnoreCase(dpid)) {
+							log.debug("ModifyStrict SFP Flow");
+							entriesFromStorage.get(dpid).put(entry, newFlowMod);
+							entry2dpid.put(entry, dpid);
+							newFlowMod = FlowModUtils.toFlowModifyStrict(newFlowMod);
+							outQueue.add(newFlowMod);
+							/* DELETE_STRICT and then ADD b/c the match is now different */
 						} else {
-							writeOFMessageToSwitch(DatapathId.of(dpidOldFlowMod), oldFlowMod);
-							writeOFMessageToSwitch(DatapathId.of(dpid), FlowModUtils.toFlowAdd(newFlowMod)); 
+							log.debug("DeleteStrict and Add SFP Flow");
+							oldFlowMod = FlowModUtils.toFlowDeleteStrict(oldFlowMod);
+							OFFlowAdd addTmp = FlowModUtils.toFlowAdd(newFlowMod);
+							/* If the flow's dpid and the current switch we're looking at are the same, add to the queue. */
+							if (oldDpid.equals(dpid)) {
+								outQueue.add(oldFlowMod);
+								outQueue.add(addTmp); 
+								/* Otherwise, go ahead and send the flows now (since queuing them will send to the wrong switch). */
+							} else {
+								writeOFMessageToSwitch(DatapathId.of(oldDpid), oldFlowMod);
+								writeOFMessageToSwitch(DatapathId.of(dpid), FlowModUtils.toFlowAdd(newFlowMod)); 
+							}
+							entriesFromStorage.get(dpid).put(entry, addTmp);
+							entry2dpid.put(entry, dpid);			
 						}
+						/* Add a brand-new flow with ADD */
+					} else if (newFlowMod != null && oldFlowMod == null) {
+						log.debug("Add SFP Flow");
+						OFFlowAdd addTmp = FlowModUtils.toFlowAdd(newFlowMod);
 						entriesFromStorage.get(dpid).put(entry, addTmp);
-						entry2dpid.put(entry, dpid);			
+						entry2dpid.put(entry, dpid);
+						outQueue.add(addTmp);
+						/* Something strange happened, so remove the flow */
+					} else if (newFlowMod == null) { 
+						entriesFromStorage.get(dpid).remove(entry);
+						entry2dpid.remove(entry);
 					}
-					/* Add a brand-new flow with ADD */
-				} else if (newFlowMod != null && oldFlowMod == null) {
-					log.debug("Add SFP Flow");
-					OFFlowAdd addTmp = FlowModUtils.toFlowAdd(newFlowMod);
-					entriesFromStorage.get(dpid).put(entry, addTmp);
-					entry2dpid.put(entry, dpid);
-					outQueue.add(addTmp);
-					/* Something strange happened, so remove the flow */
-				} else if (newFlowMod == null) { 
-					entriesFromStorage.get(dpid).remove(entry);
-					entry2dpid.remove(entry);
+				} else { /* must be a group mod */
+					if (oldDpid != null) {
+						oldGroupMod = (OFGroupMod) entriesFromStorage.get(oldDpid).remove(entry);
+					}
+
+					if (oldGroupMod != null && newGroupMod != null) {
+						/* Modify */
+						if (oldGroupMod.getGroup().equals(newGroupMod.getGroup()) &&
+								oldDpid.equalsIgnoreCase(dpid)) {
+							log.debug("Modify SFP Group");
+							entriesFromStorage.get(dpid).put(entry, newGroupMod);
+							entry2dpid.put(entry, dpid);
+							newGroupMod = GroupUtils.toGroupModify(newGroupMod);
+							outQueue.add(newGroupMod);
+						} else { /* Delete followed by Add */
+							log.debug("Delete and Add SFP Group");
+							oldGroupMod = GroupUtils.toGroupDelete(oldGroupMod);
+							newGroupMod = GroupUtils.toGroupAdd(newGroupMod);
+							if (oldDpid.equalsIgnoreCase(dpid)) {
+								outQueue.add(oldGroupMod);
+								outQueue.add(newGroupMod);
+							} else {
+								writeOFMessageToSwitch(DatapathId.of(oldDpid), oldGroupMod);
+								writeOFMessageToSwitch(DatapathId.of(dpid), newGroupMod);
+							}
+							entriesFromStorage.get(dpid).put(entry, newGroupMod);
+							entry2dpid.put(entry, dpid);
+						}
+						/* Add */
+					} else if (oldGroupMod == null && newGroupMod != null) {
+						log.debug("Add SFP Group");
+						newGroupMod = GroupUtils.toGroupAdd(newGroupMod);
+						entriesFromStorage.get(dpid).put(entry, newGroupMod);
+						entry2dpid.put(entry, dpid);
+						outQueue.add(newGroupMod);
+					} else {
+						/* Something strange happened; remove group */
+						entriesFromStorage.get(dpid).remove(entry);
+						entry2dpid.remove(entry);
+					}
 				}
 			}
 			/* Batch-write all queued messages to the switch */
@@ -582,7 +612,12 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 
 		// send flow_mod delete
 		if (switchService.getSwitch(DatapathId.of(dpid)) != null) {
-			OFFlowDeleteStrict flowMod = FlowModUtils.toFlowDeleteStrict(entriesFromStorage.get(dpid).get(entryName));
+			OFMessage message = entriesFromStorage.get(dpid).get(entryName);
+			if (message instanceof OFFlowMod) {
+				message = FlowModUtils.toFlowDeleteStrict((OFFlowMod) message);
+			} else if (message instanceof OFGroupMod) {
+				message = GroupUtils.toGroupDelete((OFGroupMod) message);
+			}
 
 			if (entriesFromStorage.containsKey(dpid) && entriesFromStorage.get(dpid).containsKey(entryName)) {
 				entriesFromStorage.get(dpid).remove(entryName);
@@ -591,7 +626,7 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 				return;
 			}
 
-			writeFlowModToSwitch(DatapathId.of(dpid), flowMod);
+			writeOFMessageToSwitch(DatapathId.of(dpid), message);
 		} else {
 			log.debug("Not sending flow delete for disconnected switch.");
 		}
@@ -628,34 +663,9 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		}
 	}
 
-	/**
-	 * Writes an OFFlowMod to a switch. It checks to make sure the switch
-	 * exists before it sends
-	 * @param dpid The data  to write the flow mod to
-	 * @param flowMod The OFFlowMod to write
-	 */
-	private void writeFlowModToSwitch(DatapathId dpid, OFFlowMod flowMod) {
-		IOFSwitch ofSwitch = switchService.getSwitch(dpid);
-		if (ofSwitch == null) {
-			if (log.isDebugEnabled()) {
-				log.debug("Not deleting key {} :: switch {} not connected", dpid.toString());
-			}
-			return;
-		}
-		writeFlowModToSwitch(ofSwitch, flowMod);
-	}
-
-	/**
-	 * Writes an OFFlowMod to a switch
-	 * @param sw The IOFSwitch to write to
-	 * @param flowMod The OFFlowMod to write
-	 */
-	private void writeFlowModToSwitch(IOFSwitch sw, OFFlowMod flowMod) {
-		sw.write(flowMod);
-	}
 	@Override
 	public String getName() {
-		return StaticFlowName;
+		return MODULE_NAME;
 	}
 
 	/**
@@ -669,74 +679,60 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	 */
 	public Command handleFlowRemoved(IOFSwitch sw, OFFlowRemoved msg, FloodlightContext cntx) {
 		U64 cookie = msg.getCookie();
-		/**
-		 * This is just to sanity check our assumption that static flows
-		 * never expire.
-		 */
-		if (AppCookie.extractApp(cookie) == STATIC_FLOW_APP_ID) {
+
+		if (AppCookie.extractApp(cookie) == STATIC_ENTRY_APP_ID) {
 			OFFlowRemovedReason reason = null;
-			switch (msg.getVersion()) {
-			case OF_10:
-				reason = OFFlowRemovedReasonSerializerVer10.ofWireValue((byte) msg.getReason());
-				break;
-			case OF_11:
-				reason = OFFlowRemovedReasonSerializerVer11.ofWireValue((byte) msg.getReason());
-				break;
-			case OF_12:
-				reason = OFFlowRemovedReasonSerializerVer12.ofWireValue((byte) msg.getReason());
-				break;
-			case OF_13:
-				reason = OFFlowRemovedReasonSerializerVer13.ofWireValue((byte) msg.getReason());
-				break;
-			case OF_14:
-				reason = OFFlowRemovedReasonSerializerVer14.ofWireValue((byte) msg.getReason());
-				break;
-			default:
-				log.debug("OpenFlow version {} unsupported for OFFlowRemovedReasonSerializerVerXX", msg.getVersion());
-				break;
-			}
+			reason = msg.getReason();
 			if (reason != null) {
 				if (OFFlowRemovedReason.DELETE == reason) {
-					log.error("Got a FlowRemove message for a infinite " + 
-							"timeout flow: {} from switch {}", msg, sw);
+					log.debug("Received flow_removed message for a infinite " + 
+							"timeout flow from switch {}. Removing it from the SFP DB", msg, sw);
 				} else if (OFFlowRemovedReason.HARD_TIMEOUT == reason || OFFlowRemovedReason.IDLE_TIMEOUT == reason) {
 					/* Remove the Flow from the DB since it timed out */
-					log.debug("Received an IDLE or HARD timeout for an SFP flow. Removing it from the SFP DB.");
-					/* 
-					 * Lookup the flow based on the flow contents. We do not know/care about the name of the 
-					 * flow based on this message, but we can get the table values for this switch and search.
-					 */
-					String flowToRemove = null;
-					Map<String, OFFlowMod> flowsByName = getFlows(sw.getId());
-					for (Map.Entry<String, OFFlowMod> entry : flowsByName.entrySet()) {
-						if (msg.getCookie().equals(entry.getValue().getCookie()) &&
-								(msg.getVersion().compareTo(OFVersion.OF_12) < 0 ? true : msg.getHardTimeout() == entry.getValue().getHardTimeout()) &&
-								msg.getIdleTimeout() == entry.getValue().getIdleTimeout() &&
-								msg.getMatch().equals(entry.getValue().getMatch()) &&
-								msg.getPriority() == entry.getValue().getPriority() &&
-								(msg.getVersion().compareTo(OFVersion.OF_10) == 0 ? true : msg.getTableId().equals(entry.getValue().getTableId()))
-								) {
-							flowToRemove = entry.getKey();
-							break;
-						}
-					}
+					log.debug("Received an IDLE or HARD timeout for an SFP flow. Removing it from the SFP DB");
+				} else {
+					log.debug("Received flow_removed message for reason {}. Removing it from the SFP DB", reason);
+				}
+				/* 
+				 * Lookup the flow based on the flow contents. We do not know/care about the name of the 
+				 * flow based on this message, but we can get the table values for this switch and search.
+				 */
+				String flowToRemove = null;
+				Map<String, OFMessage> flowsByName = getEntries(sw.getId())
+						.entrySet()
+						.stream()
+						.filter(e -> e.getValue() instanceof OFFlowMod)
+						.collect(Collectors.toMap(e -> e.getKey(), e -> e.getValue()));
 
-					log.debug("Flow to Remove: {}", flowToRemove);
-
-					/*
-					 * Remove the flow. This will send the delete message to the switch,
-					 * since we cannot tell the storage listener rowsdeleted() that we
-					 * are only removing our local DB copy of the flow and that it actually
-					 * timed out on the switch and is already gone. The switch will silently
-					 * discard the delete message in this case.
-					 * 
-					 * TODO: We should come up with a way to convey to the storage listener
-					 * the reason for the flow being removed.
-					 */
-					if (flowToRemove != null) {
-						deleteFlow(flowToRemove);
+				for (Map.Entry<String, OFMessage> e : flowsByName.entrySet()) {
+					OFFlowMod f = (OFFlowMod) e.getValue();
+					if (msg.getCookie().equals(f.getCookie()) &&
+							(msg.getVersion().compareTo(OFVersion.OF_12) < 0 ? true : msg.getHardTimeout() == f.getHardTimeout()) &&
+							msg.getIdleTimeout() == f.getIdleTimeout() &&
+							msg.getMatch().equals(f.getMatch()) &&
+							msg.getPriority() == f.getPriority() &&
+							(msg.getVersion().compareTo(OFVersion.OF_10) == 0 ? true : msg.getTableId().equals(f.getTableId()))
+							) {
+						flowToRemove = e.getKey();
+						break;
 					}
 				}
+
+				/*
+				 * Remove the flow. This will send the delete message to the switch,
+				 * since we cannot tell the storage listener rowsdeleted() that we
+				 * are only removing our local DB copy of the flow and that it actually
+				 * timed out on the switch and is already gone. The switch will silently
+				 * discard the delete message in this case.
+				 * 
+				 * TODO: We should come up with a way to convey to the storage listener
+				 * the reason for the flow being removed.
+				 */
+				if (flowToRemove != null) {
+					log.warn("Removing flow {} for reason {}", flowToRemove, reason);
+					deleteEntry(flowToRemove);
+				}
+
 				/* Stop the processing chain since we sent or asked for the delete message. */
 				return Command.STOP;
 			}
@@ -771,7 +767,7 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	public Collection<Class<? extends IFloodlightService>> getModuleServices() {
 		Collection<Class<? extends IFloodlightService>> l =
 				new ArrayList<Class<? extends IFloodlightService>>();
-		l.add(IStaticFlowEntryPusherService.class);
+		l.add(IStaticEntryPusherService.class);
 		return l;
 	}
 
@@ -781,7 +777,7 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		IFloodlightService> m =
 		new HashMap<Class<? extends IFloodlightService>,
 		IFloodlightService>();
-		m.put(IStaticFlowEntryPusherService.class, this);
+		m.put(IStaticEntryPusherService.class, this);
 		return m;
 	}
 
@@ -796,8 +792,43 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		return l;
 	}
 
+	private void populateColumns() {
+		Set<String> tmp = new HashSet<String>();
+		tmp.add(Columns.COLUMN_NAME);
+		tmp.add(Columns.COLUMN_ENTRY_TYPE);
+		tmp.add(Columns.COLUMN_SWITCH);
+		tmp.add(Columns.COLUMN_TABLE_ID);
+		tmp.add(Columns.COLUMN_ACTIVE);
+		tmp.add(Columns.COLUMN_IDLE_TIMEOUT);
+		tmp.add(Columns.COLUMN_HARD_TIMEOUT);
+		tmp.add(Columns.COLUMN_PRIORITY);
+		tmp.add(Columns.COLUMN_COOKIE);
+		tmp.add(Columns.COLUMN_TP_SRC);
+		tmp.add(Columns.COLUMN_TP_DST);
+		tmp.add(Columns.COLUMN_ACTIONS);
+		
+		tmp.add(Columns.COLUMN_GROUP_TYPE);
+		tmp.add(Columns.COLUMN_GROUP_BUCKETS);
+		tmp.add(Columns.COLUMN_GROUP_ID);
+		
+		for (MatchFields m : MatchFields.values()) {
+			/* skip all BSN_* matches */
+			if (!m.name().toLowerCase().startsWith("bsn")) {
+				tmp.add(StaticEntryPusher.matchFieldToColumnName(m));
+			}
+		}
+		
+		for (OFInstructionType t : OFInstructionType.values()) {
+			tmp.add(StaticEntryPusher.intructionToColumnName(t));
+		}
+
+		Columns.ALL_COLUMNS = ImmutableSet.copyOf(tmp);
+		
+	}
+	
 	@Override
 	public void init(FloodlightModuleContext context) throws FloodlightModuleException {
+		populateColumns();
 		floodlightProviderService = context.getServiceImpl(IFloodlightProviderService.class);
 		switchService = context.getServiceImpl(IOFSwitchService.class);
 		storageSourceService = context.getServiceImpl(IStorageSourceService.class);
@@ -812,11 +843,11 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		floodlightProviderService.addHAListener(this.haListener);
 		// assumes no switches connected at startup()
 		storageSourceService.createTable(TABLE_NAME, null);
-		storageSourceService.setTablePrimaryKeyName(TABLE_NAME, COLUMN_NAME);
+		storageSourceService.setTablePrimaryKeyName(TABLE_NAME, Columns.COLUMN_NAME);
 		storageSourceService.addListener(TABLE_NAME, this);
 		entriesFromStorage = readEntriesFromStorage();
 		entry2dpid = computeEntry2DpidMap(entriesFromStorage);
-		restApiService.addRestletRoutable(new StaticFlowEntryWebRoutable());
+		restApiService.addRestletRoutable(new StaticEntryWebRoutable());
 	}
 
 	// IStaticFlowEntryPusherService methods
@@ -824,23 +855,32 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	@Override
 	public void addFlow(String name, OFFlowMod fm, DatapathId swDpid) {
 		try {
-			Map<String, Object> fmMap = StaticFlowEntries.flowModToStorageEntry(fm, swDpid.toString(), name);
+			Map<String, Object> fmMap = StaticEntries.flowModToStorageEntry(fm, swDpid.toString(), name);
 			storageSourceService.insertRowAsync(TABLE_NAME, fmMap);
 		} catch (Exception e) {
-			log.error("Error! Check the fields specified for the flow.Make sure IPv4 fields are not mixed with IPv6 fields or all "
-					+ "mandatory fields are specified. ");
+			log.error("Did not add flow with bad match/action combination. {}", fm);
 		}
 	}
 
 	@Override
-	public void deleteFlow(String name) {
+	public void addGroup(String name, OFGroupMod gm, DatapathId swDpid) {
+		try {
+			Map<String, Object> gmMap = StaticEntries.groupModToStorageEntry(gm, swDpid.toString(), name);
+			storageSourceService.insertRowAsync(TABLE_NAME, gmMap);
+		} catch (Exception e) {
+			log.error("Did not add group with bad match/action combination. {}", gm);
+		}
+	}
+
+	@Override
+	public void deleteEntry(String name) {
 		storageSourceService.deleteRowAsync(TABLE_NAME, name);
 	}
 
 	@Override
-	public void deleteAllFlows() {
+	public void deleteAllEntries() {
 		for (String entry : entry2dpid.keySet()) {
-			deleteFlow(entry);
+			deleteEntry(entry);
 		}
 
 		/*
@@ -873,12 +913,12 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	}
 
 	@Override
-	public void deleteFlowsForSwitch(DatapathId dpid) {
+	public void deleteEntriesForSwitch(DatapathId dpid) {
 		String sDpid = dpid.toString();
 
 		for (Entry<String, String> e : entry2dpid.entrySet()) {
 			if (e.getValue().equals(sDpid))
-				deleteFlow(e.getKey());
+				deleteEntry(e.getKey());
 		}
 
 		/*
@@ -947,13 +987,14 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 	 */
 
 	@Override
-	public Map<String, Map<String, OFFlowMod>> getFlows() {
+	public Map<String, Map<String, OFMessage>> getEntries() {
 		return entriesFromStorage;
 	}
 
 	@Override
-	public Map<String, OFFlowMod> getFlows(DatapathId dpid) {
-		return entriesFromStorage.get(dpid.toString());
+	public Map<String, OFMessage> getEntries(DatapathId dpid) {
+		Map<String, OFMessage> m = entriesFromStorage.get(dpid.toString());
+		return m == null ? Collections.emptyMap() : m;
 	}
 
 	// IHAListener
@@ -977,7 +1018,7 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 
 		@Override
 		public String getName() {
-			return StaticFlowEntryPusher.this.getName();
+			return StaticEntryPusher.this.getName();
 		}
 
 		@Override
@@ -995,13 +1036,11 @@ implements IOFSwitchListener, IFloodlightModule, IStaticFlowEntryPusherService, 
 		@Override
 		public void transitionToStandby() {	
 			log.debug("Controller is now in STANDBY role. Clearing static flow entries from store.");
-			deleteAllFlows();
+			deleteAllEntries();
 		}
 	}
 
 	@Override
 	public void switchDeactivated(DatapathId switchId) {
-		// TODO Auto-generated method stub
-		
 	}
 }
